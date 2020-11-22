@@ -1,0 +1,3 @@
+geo_data = pd.read_csv("http://cocl.us/Geospatial_data")
+
+geo_data.head()
