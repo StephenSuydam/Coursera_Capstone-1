@@ -1,0 +1,18 @@
+geo_data = pd.read_csv("http://cocl.us/Geospatial_data")
+
+geo_data.head()
+
+
+
+toronto_data = pd.read_csv("https://raw.githubusercontent.com/RamanujaSVL/Coursera_Capstone/master/toronto_data.csv")
+
+
+toronto_data.head()
+
+geo_data.columns = ['Postcode', 'Latitude', 'Longitude']
+
+
+
+toronto_geo_data = pd.merge(toronto_data, geo_data, on='Postcode')
+
+toronto_geo_data.head()
