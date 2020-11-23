@@ -1,53 +1,446 @@
+
+# Load the required libraries
 import numpy as np
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
-#Command to install OpenCage Geocoder for fetching Lat and Lng of Neighborhood
+# Found the table using beautifulsoup and used Pandas to read it in. 
+res = requests.get('https://en.wikipedia.org/wiki/List_of_postal_codes_of_Canada:_M')
+soup = BeautifulSoup(res.content,'lxml')
+table = soup.find_all('table')[0] 
+df = pd.read_html(str(table))
+
+
+# WRANGLE/Transform THE DATA
+# Convert the list back into a dataframe
+data = pd.DataFrame(df[0])
+
+# Rename the columns as instructed
+data = data.rename(columns={0:'PostalCode', 1:'Bourough', 2:'Neighborhood'})
+
+# Get rid of the first row which contained the table headers from the webpage
+data = data.iloc[1:]
+
+
+# Only process the cells that have an assigned borough. Ignore cells with a borough that is Not assigned.
+data = data[~data['Bourough'].str.contains('Not assigned')]
+
+
+# More than one neighborhood can exist in one postal code area. 
+#For example, in the table on the Wikipedia page, you will notice 
+#that M5A is listed twice and has two neighborhoods: Harbourfront 
+#and Regent Park. These two rows will be combined into one row with 
+#the neighborhoods separated with a comma
+df2=data.groupby(['PostalCode', 'Bourough']).apply(lambda group: ', '.join(group['Neighborhood']))
+
+
+# Convert the Series back into a DataFrame and put the 'Neighbourhood' column label back in
+df2=df2.to_frame().reset_index()
+df2 = df2.rename(columns={0:'Neighborhood'})
+
+# If a cell has a borough but a Not assigned neighborhood, then the neighborhood will be the same as the borough.
+df2.loc[df2.Neighborhood == 'Not assigned', 'Neighborhood' ] = df2.Bourough
+
+# Display the DataFrame
+df2.head()
+
+
+
+# Load Toronto geospatial cooridinates
+!wget -O to_geo_space.csv http://cocl.us/Geospatial_data
+
+#Read into dataframe
+gf = pd.read_csv('to_geo_space.csv')
+
+#rename the coloumns so the match
+gf = gf.rename(columns={'Postal Code':'PostalCode'})
+
+#Merge the Toronto data with geo cooridinate data
+gf_new = pd.merge(df2, gf, on='PostalCode', how='inner')
+
+# display the new dataframe
+gf_new.head()
+
+
+# Load this data from Stats Canada
+df_pop = pd.read_csv('https://www12.statcan.gc.ca/census-recensement/2016/dp-pd/hlt-fst/pd-pl/Tables/File.cfm?T=1201&SR=1&RPP=9999&PR=0&CMA=0&CSD=0&S=22&O=A&Lang=Eng&OFT=CSV',encoding = 'unicode_escape')
+# Rename the columns appropiatley
+df_pop = df_pop.rename(columns={'Geographic code':'PostalCode', 'Geographic name':'PostalCod2', 'Province or territory':'Province', 'Incompletely enumerated Indian reserves and Indian settlements, 2016':'Incomplete', 'Population, 2016':'Population_2016', 'Total private dwellings, 2016':'TotalPrivDwellings', 'Private dwellings occupied by usual residents, 2016':'PrivDwellingsOccupied'})
+df_pop= df_pop.drop(columns=['PostalCod2', 'Province', 'Incomplete', 'TotalPrivDwellings', 'PrivDwellingsOccupied'])
+
+# Get rid of the first row 
+df_pop = df_pop.iloc[1:]
+df_pop.head()
+
+
+
+#Merge the Toronto Pop data with geo postalcode data
+gf_new
+gf_new = pd.merge(df_pop, gf_new, on='PostalCode', how='right')
+# sort on population
+gf_new = gf_new.sort_values(by=['Population_2016'], ascending=False)
+
+# display the new dataframe
+gf_new.head()
+
+
+# It was easier to extract this data manually from Stats Canada and load it then it was to scrape it.
+# It was only accessible from indeividual queries per postal code on the statscan web site.
+df_income = pd.read_csv('TorontoAvgIncomeByPC.csv',encoding = 'unicode_escape')
+# Rename the after tax income column to a more maanageable name
+df_income = df_income.rename(columns={"after-tax income of households in 2015":"AfterTaxIncome2015"})
+df_income.head()
+
+
+gf_new = pd.merge(df_income, gf_new, on='PostalCode', how='right')
+# get rid of the Nulls
+gf_new = gf_new.replace('Null', 0)
+#gf_new cast as float
+gf_new['AfterTaxIncome2015'] = gf_new['AfterTaxIncome2015'].astype('float64') 
+# Sort on Income
+gf_new = gf_new.sort_values(by=['AfterTaxIncome2015'], ascending=False)
+
+# display the new dataframe
+gf_new.to_csv('TO_Affluence.csv')
+gf_new.head(10)
+
+
+
+#FourSquare Credentials
+
+CLIENT_ID = 'APO00QTF2Y3WAWZUT2YTZXSPZGDGHOYNY5FSI1ARNPVQ2WQU' # your Foursquare ID
+
+
+CLIENT_SECRET = 'RWUKTJGS3Y1GOCBSRX1TMUUFMYPFL2BVV03GVUVIHH3G25UC' # your Foursquare Secret
+
+
+VERSION = '20180605' # Foursquare API version
+
+
+#Let's explore neighborhoods in our dataframe.
+import requests # library to handle requests
+from pandas.io.json import json_normalize # tranform JSON file into a pandas dataframe
+
+LIMIT = 200 # limit of number of venues returned by Foursquare API
+
+radius = 500 # define radius
+
+def getNearbyVenues(names, latitudes, longitudes, radius=500):
+    
+    venues_list=[]
+    for name, lat, lng in zip(names, latitudes, longitudes):
+        print(name)
+            
+        # create the API request URL
+        url = 'https://api.foursquare.com/v2/venues/explore?&client_id={}&client_secret={}&v={}&ll={},{}&radius={}&limit={}'.format(
+            CLIENT_ID, 
+            CLIENT_SECRET, 
+            VERSION, 
+            lat, 
+            lng, 
+            radius, 
+            LIMIT)
+            
+        # make the GET request
+        results = requests.get(url).json()["response"]['groups'][0]['items']
+        
+        # return only relevant information for each nearby venue
+        venues_list.append([(
+            name, 
+            lat, 
+            lng, 
+            v['venue']['name'], 
+            v['venue']['location']['lat'], 
+            v['venue']['location']['lng'],  
+            v['venue']['categories'][0]['name']) for v in results])
+
+    nearby_venues = pd.DataFrame([item for venue_list in venues_list for item in venue_list])
+    nearby_venues.columns = ['Neighborhood', 
+                  'Neighborhood Latitude', 
+                  'Neighborhood Longitude', 
+                  'Venue', 
+                  'Venue Latitude', 
+                  'Venue Longitude', 
+                  'Venue Category']
+    
+    return(nearby_venues)
+
+
+#Toronto Bouroughs
+TO_data = gf_new
+TO_data.head()
+
+
+# Get all of the Venues
+TO_venues = getNearbyVenues(names=TO_data['Neighborhood'],
+                                   latitudes=TO_data['Latitude'],
+                                   longitudes=TO_data['Longitude']
+                                  )
+                                  
+                                  
+                                  
+TO_venues.groupby('Neighborhood').count()
+
+
+
+print('Unique Venue Categories:')
+list(TO_venues['Venue Category'].unique())
+
+# Here we manually pick out restaurants or 'features' from the unique venue list and that we want to examine for similiarity during clustering
+rest_list = ['Steakhouse', 'Coffee Shop', 'Café', 'Ramen Restaurant', 'Indonesian Restaurant', 'Restaurant', 'Japanese Restaurant', 
+             'Fast Food Restaurant', 'Sushi Restaurant', 'Vietnamese Restaurant', 'Pizza Place', 'Sandwich Place', 'Middle Eastern Restaurant', 
+             'Burger Joint', 'American Restaurant', 'Food Court', 'Wings Joint', 'Burrito Place', 'Asian Restaurant', 'Deli / Bodega', 
+             'Greek Restaurant', 'Fried Chicken Joint', 'Airport Food Court', 'Chinese Restaurant', 'Breakfast Spot', 'Mexican Restaurant',
+             'Indian Restaurant', 'Latin American Restaurant', 'Bar', 'Pub', 'Italian Restaurant', 'French Restaurant', 'Ice Cream Shop', 
+             'Caribbean Restaurant', 'Gastropub', 'Thai Restaurant', 'Cajun / Creole Restaurant', 'Diner', 'Dim Sum Restaurant', 'Seafood Restaurant', 
+             'Food & Drink Shop', 'Noodle House', 'Food', 'Fish & Chips Shop', 'Falafel Restaurant', 'Gourmet Shop', 'Vegetarian / Vegan Restaurant', 
+             'South American Restaurant', 'Korean Restaurant', 'Cuban Restaurant', 'New American Restaurant', 'Malay Restaurant', 'Mac & Cheese Joint',
+             'Bistro', 'Southern / Soul Food Restaurant', 'Tapas Restaurant',  'Sports Bar', 'Polish Restaurant', 'Ethiopian Restaurant', 
+             'Creperie', 'Sake Bar', 'Persian Restaurant', 'Afghan Restaurant','Mediterranean Restaurant', 'BBQ Joint', 'Jewish Restaurant', 
+             'Comfort Food Restaurant',  'Hakka Restaurant', 'Food Truck', 'Taiwanese Restaurant',  'Snack Place', 'Eastern European Restaurant', 
+             'Dumpling Restaurant', 'Belgian Restaurant', 'Arepa Restaurant', 'Taco Place', 'Doner Restaurant', 'Filipino Restaurant', 
+             'Hotpot Restaurant', 'Poutine Place', 'Salad Place',  'Portuguese Restaurant', 'Modern European Restaurant', 'Empanada Restaurant', 
+             'Irish Pub', 'Molecular Gastronomy Restaurant', 'German Restaurant', 'Brazilian Restaurant', 'Gluten-free Restaurant', 'Soup Place']
+
+rest_pd = pd.DataFrame(rest_list)
+#rest_pd
+#rename the coloumns so the match
+rest_pd = rest_pd.rename(columns={0:'Venue Category'})
+
+#Join the 2 dataframes as instructed
+TO_new = pd.merge(TO_venues, rest_pd, on='Venue Category', how='right')
+
+# display the new dataframe
+#TO_new
+
+TO_new.groupby('Neighborhood').count()
+
+
+
+# one hot encoding
+TO_new_onehot = pd.get_dummies(TO_new[['Venue Category']], prefix="", prefix_sep="")
+
+# add neighborhood column back to dataframe
+TO_new_onehot['Neighborhood'] = TO_new['Neighborhood'] 
+
+
+# move neighborhood column to the first column
+fixed_columns = [TO_new_onehot.columns[-1]] + list(TO_new_onehot.columns[:-1])
+TO_new_onehot = TO_new_onehot[fixed_columns]
+
+TO_new_onehot.head()
+
+
+#Analyze each neighbourhood
+
+
+
+TO_grouped = TO_new_onehot.groupby('Neighborhood').mean().reset_index()
+TO_grouped.shape
+
+
+TO_grouped.head()
+
+
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+import numpy as np
+
+
+TO_grouped_clustering = TO_grouped.drop('Neighborhood', 1)
+
+# Use silhouette score to find optimal number of clusters to segment the data
+kclusters = np.arange(2,10)
+results = {}
+for size in kclusters:
+    model = KMeans(n_clusters = size).fit(TO_grouped_clustering)
+    predictions = model.predict(TO_grouped_clustering)
+    results[size] = silhouette_score(TO_grouped_clustering, predictions)
+
+best_size = max(results, key=results.get)
+best_size
+
+
+
+#import k-means from clustering stage
+from sklearn.cluster import KMeans
+
+# set number of clusters
+kclusters = best_size
+
+
+# run k-means clustering
+kmeans = KMeans(n_clusters=kclusters, random_state=0).fit(TO_grouped_clustering)
+
+# check cluster labels generated for each row in the dataframe
+kmeans.labels_[0:10]
+
+
+def return_most_common_venues(row, num_top_venues):
+    row_categories = row.iloc[1:]
+    row_categories_sorted = row_categories.sort_values(ascending=False)
+    return row_categories_sorted.index.values[0:num_top_venues]
+
+num_top_venues = 10
+
+indicators = ['st', 'nd', 'rd']
+
+# create columns according to number of top venues
+columns = ['Neighborhood']
+for ind in np.arange(num_top_venues):
+    try:
+        columns.append('{}{} Most Common Venue'.format(ind+1, indicators[ind]))
+    except:
+        columns.append('{}th Most Common Venue'.format(ind+1))
+
+# create a new dataframe
+neighborhoods_venues_sorted = pd.DataFrame(columns=columns)
+neighborhoods_venues_sorted['Neighborhood'] = TO_grouped['Neighborhood']
+
+for ind in np.arange(TO_grouped.shape[0]):
+    neighborhoods_venues_sorted.iloc[ind, 1:] = return_most_common_venues(TO_grouped.iloc[ind, :], num_top_venues)
+    
+    
+#Merge the Toronto data with geo cooridinate data and make sure it's the right shape
+TO_labels = pd.merge(TO_data,TO_grouped, on='Neighborhood', how='right')
+TO_labels.shape
+
+
+TO_labels = TO_labels.drop(columns=['Steakhouse', 'Coffee Shop', 'Café', 'Ramen Restaurant', 'Indonesian Restaurant', 'Restaurant', 'Japanese Restaurant', 
+             'Fast Food Restaurant', 'Sushi Restaurant', 'Vietnamese Restaurant', 'Pizza Place', 'Sandwich Place', 'Middle Eastern Restaurant', 
+             'Burger Joint', 'American Restaurant', 'Food Court', 'Wings Joint', 'Burrito Place', 'Asian Restaurant', 'Deli / Bodega', 
+             'Greek Restaurant', 'Fried Chicken Joint', 'Airport Food Court', 'Chinese Restaurant', 'Breakfast Spot', 'Mexican Restaurant',
+             'Indian Restaurant', 'Latin American Restaurant', 'Bar', 'Pub', 'Italian Restaurant', 'French Restaurant', 'Ice Cream Shop', 
+             'Caribbean Restaurant', 'Gastropub', 'Thai Restaurant', 'Cajun / Creole Restaurant', 'Diner', 'Dim Sum Restaurant', 'Seafood Restaurant', 
+             'Food & Drink Shop', 'Noodle House', 'Food', 'Fish & Chips Shop', 'Falafel Restaurant', 'Gourmet Shop', 'Vegetarian / Vegan Restaurant', 
+             'South American Restaurant', 'Korean Restaurant', 'Cuban Restaurant', 'New American Restaurant', 'Malay Restaurant', 'Mac & Cheese Joint',
+             'Bistro', 'Southern / Soul Food Restaurant', 'Tapas Restaurant',  'Sports Bar', 'Polish Restaurant', 'Ethiopian Restaurant', 
+             'Creperie', 'Sake Bar', 'Persian Restaurant', 'Afghan Restaurant','Mediterranean Restaurant', 'BBQ Joint', 'Jewish Restaurant', 
+             'Comfort Food Restaurant',  'Hakka Restaurant', 'Food Truck', 'Taiwanese Restaurant',  'Snack Place', 'Eastern European Restaurant', 
+             'Dumpling Restaurant', 'Belgian Restaurant', 'Arepa Restaurant', 'Taco Place', 'Doner Restaurant', 'Filipino Restaurant', 
+             'Hotpot Restaurant', 'Poutine Place', 'Salad Place',  'Portuguese Restaurant', 'Modern European Restaurant', 'Empanada Restaurant', 
+             'Irish Pub', 'Molecular Gastronomy Restaurant', 'German Restaurant', 'Brazilian Restaurant', 'Gluten-free Restaurant', 'Soup Place'])
+TO_labels.head()
+
+
+TO_merged = TO_labels
+
+# add clustering labels
+TO_merged['Cluster Labels'] = kmeans.labels_
+
+# merge toronto_grouped with toronto_data to add latitude/longitude for each neighborhood
+TO_merged = TO_merged.join(neighborhoods_venues_sorted.set_index('Neighborhood'), on='Neighborhood')
+
+TO_merged.head() # check the last columns!
+
+
+TO_merged_new1 = TO_merged.loc[TO_merged['Cluster Labels'] == 0, TO_merged.columns[[3, 4] + list(range(5, TO_merged.shape[1]))]]
+TO_merged_new1.shape
+
+TO_merged_new2 = TO_merged.loc[TO_merged['Cluster Labels'] == 1, TO_merged.columns[[3, 4] + list(range(5, TO_merged.shape[1]))]]
+TO_merged_new2.shape
+
+
+
+# Find the geographic center of the most dense or like cluster.
+Cluster_0_coorid = TO_merged_new2[['Latitude', 'Longitude']]
+Cluster_0_coorid = list(Cluster_0_coorid.values) 
+lat = []
+long = []
+
+
+
+for l in Cluster_0_coorid:
+  lat.append(l[0])
+  long.append(l[1])
+
+
+
+Blatitude = sum(lat)/len(lat)
+Blongitude = sum(long)/len(long)
+print(Blatitude)
+print(Blongitude)
+
+
+# Intstall opencage to reverse lookup the cooridinates
 !pip install opencage
-
-#Importing OpenCage Geocoder
 from opencage.geocoder import OpenCageGeocode
+from pprint import pprint
 
-# use the inline backend to generate the plots within the browser
-%matplotlib inline 
+key = '1d97b344df184b1cb0d2427663f85ac6'
+geocoder = OpenCageGeocode(key)
 
-#Importing Matplot lib and associated packages to perform Data Visualisation and Exploratory Data Analysis
-import matplotlib as mpl
-import matplotlib.pyplot as plt
+results = geocoder.reverse_geocode(Blatitude, Blongitude)
+pprint(results)
 
-mpl.style.use('ggplot') # optional: for ggplot-like style
 
-# check for latest version of Matplotlib
-print ('Matplotlib version: ', mpl.__version__) # >= 2.0.0
 
+#Obtain the popupstring of the best location
+popstring = TO_data[TO_data['PostalCode'].str.contains('M4S')]
+
+def str_join(*args):
+    return ''.join(map(str, args))
+
+popstring_new = str_join('The Best Neighbourhood to locate a Restaurant Supply Store is in: ', popstring['Neighborhood'].values,  ' in ' ,  popstring['Bourough'].values)
+
+
+print(popstring_new)
+
+
+
+# Let's get the coordinates for Toronto
+
+from geopy.geocoders import Nominatim
+address = 'Toronto, ON'
+
+geolocator = Nominatim(user_agent="my-application")
+location = geolocator.geocode(address)
+latitude = location.latitude
+longitude = location.longitude
+print('The geograpical coordinate of Toronto are {}, {}.'.format(latitude, longitude))
+
+
+
+# getfolium
+import folium 
 # Matplotlib and associated plotting modules
 import matplotlib.cm as cm
 import matplotlib.colors as colors
 
-#Importing folium to visualise Maps and plot based on Lat and Lng
-import folium
+# create map
+map_clusters = folium.Map(location=[latitude, longitude], zoom_start=11)
 
-#Requests to request web pages by making get requests to FourSquare REST Client
-import requests
+# set color scheme for the clusters
+x = np.arange(kclusters)
+ys = [i+x+(i*x)**2 for i in range(kclusters)]
+colors_array = cm.rainbow(np.linspace(0, 1, len(ys)))
+rainbow = [colors.rgb2hex(i) for i in colors_array]
 
-#To normalise data returned by FourSquare API
-from pandas.io.json import json_normalize
+# add markers to the map
+markers_colors = []
+for lat, lon, poi, cluster in zip(TO_merged['Latitude'], TO_merged['Longitude'], TO_merged['Neighborhood'], TO_merged['Cluster Labels']):
+    label = folium.Popup(str(poi) + ' Cluster ' + str(cluster), parse_html=True)
+    folium.CircleMarker(
+        [lat, lon],
+        radius=5,
+        popup=label,
+        color=rainbow[cluster-1],
+        fill=True,
+        fill_color=rainbow[cluster-1],
+        fill_opacity=0.7).add_to(map_clusters)
+    
+folium.CircleMarker([Blatitude, Blongitude],
+                    radius=50,
+                    popup='Toronto',
+                    color='red',
+                    ).add_to(map_clusters)
 
-#Importing KMeans from SciKit library to Classify neighborhoods into clusters
-from sklearn.cluster import KMeans
-
-print('Libraries imported')
-
-
-vnc_crime_df = pd.read_csv('https://raw.githubusercontent.com/RamanujaSVL/Coursera_Capstone/master/vancouver_crime_records_2018.csv', index_col=None)
-
-#Dropping X,Y which represents Lat, Lng data as Coordinates, the data seems to be corrupt
-vnc_crime_df.drop(['Unnamed: 0','MINUTE', 'HUNDRED_BLOCK', 'X', 'Y'], axis = 1, inplace = True)
-
-#vnc_crime_df.columns
-
-vnc_crime_df.head(）
-
-vnc_crime_df.columns = ['Type', 'Year','Month','Day','Hour','Neighbourhood']
-vnc_crime_df.head()
+# Interactive marker
+map_clusters.add_child(folium.ClickForMarker(popup=popstring_new))
+       
+#map_clusters
+map_clusters.save('map_clusters.html')
 
 
+print('The exact Address to locate would be: 268 Balliol Street, ON M4S 1C2, Canada or lat: 43.6991598, lng: -79.3878871')
